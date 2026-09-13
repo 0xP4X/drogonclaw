@@ -537,6 +537,16 @@ var (
 		Bold(true).
 		MarginTop(1)
 
+	SubagentBadgeStyle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#0d1117")).
+		Background(lipgloss.Color("#79c0ff")).
+		Bold(true).
+		Padding(0, 1)
+
+	SubagentTextStyle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#79c0ff")).
+		Bold(true)
+
 	ToolArgsStyle = lipgloss.NewStyle().
 		Foreground(ColorSubtle).
 		Italic(true).

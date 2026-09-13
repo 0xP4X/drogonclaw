@@ -77,6 +77,7 @@ func calculateLayoutWithSidebar(width, height int, showSidebar bool) tuiLayout {
 		l.mainWidth = width - l.sidebarWidth - sidebarGap
 		l.mainHeight = max(1, height-reservedLines)
 	} else {
+		l.hasSidebar = false
 		l.sidebarWidth = 0
 		l.sidebarHeight = 0
 		l.mainWidth = width

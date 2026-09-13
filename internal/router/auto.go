@@ -98,7 +98,7 @@ func ClassifyTaskType(prompt string) TaskType {
 	switch {
 	case containsAny(lower, []string{"exploit", "cve-", "priv esc", "privilege escalation", "payload", "shell", "rce", "sqli", "xss exploit"}):
 		return TaskExploitation
-	case containsAny(lower, []string{"scan", "nmap", "recon", "enumerate", "subdomain", "port ", "nuclei", "gobuster", "ffuf"}):
+	case containsAny(lower, []string{"scan", "nmap", "recon", "enumerate", "subdomain", "port ", "nuclei", "gobuster", "ffuf", "osint", "github", "shodan", "virustotal", "whois"}):
 		return TaskRecon
 	case containsAny(lower, []string{"report", "summary", "document findings", "executive summary"}):
 		return TaskReporting
@@ -140,7 +140,13 @@ func containsAny(s string, subs []string) bool {
 }
 
 func indexOf(s, sub string) int {
-	for i := 0; i+len(s)-len(sub)+1; i++ {
+	if len(sub) == 0 {
+		return 0
+	}
+	if len(s) < len(sub) {
+		return -1
+	}
+	for i := 0; i <= len(s)-len(sub); i++ {
 		if s[i:i+len(sub)] == sub {
 			return i
 		}

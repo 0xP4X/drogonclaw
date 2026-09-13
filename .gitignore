@@ -57,6 +57,7 @@ website/
 kirocli-x86_64-linux.zip
 Screenshot*.png
 tests/
+opencode/
 
 # Generic scaffold scripts (not part of DrogonClaw)
 scripts/setup/

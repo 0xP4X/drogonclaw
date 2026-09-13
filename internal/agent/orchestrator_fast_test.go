@@ -164,8 +164,15 @@ func TestNeedsEvidenceReview(t *testing.T) {
 		t.Fatal("capability listing with no findings evidence must skip review")
 	}
 	subEvidence := []toolOutputEvidence{{tool: "run_subfinder", output: "[SUBFINDER — knust.edu.gh] Found 469 subdomains:\na.knust.edu.gh"}}
-	if !needsEvidenceReview("Found 469 subdomains", subEvidence) {
-		t.Fatal("short result backed by findings evidence must be reviewed")
+	if needsEvidenceReview("Found 469 subdomains", subEvidence) {
+		t.Fatal("short summary without result patterns must skip review even with findings evidence")
+	}
+	if !needsEvidenceReview("Host 216.198.79.1 has ports open", subEvidence) {
+		t.Fatal("short answer citing an observed IP must be reviewed")
+	}
+	handleEvidence := []toolOutputEvidence{{tool: "profile_target", output: "[PASSIVE TARGET PROFILE]\nA: 216.198.79.1"}}
+	if needsEvidenceReview("Could you please provide your handle or alias?", handleEvidence) {
+		t.Fatal("conversational reply must skip review even when evidence holds findings")
 	}
 	if needsEvidenceReview("", subEvidence) {
 		t.Fatal("empty answer must skip review")
@@ -175,6 +182,27 @@ func TestNeedsEvidenceReview(t *testing.T) {
 	}
 	if !needsEvidenceReview(strings.Repeat("report ", 200), memEvidence) {
 		t.Fatal("long mission report must always be reviewed")
+	}
+}
+
+func TestIsDeferralAnswer(t *testing.T) {
+	for _, s := range []string{
+		"Please stand by while I collect the results.",
+		"I'm currently gathering information through multiple sources.",
+		"I'll provide the report once the data is returned.",
+	} {
+		if !isDeferralAnswer(s) {
+			t.Errorf("expected deferral: %q", s)
+		}
+	}
+	for _, s := range []string{
+		"Connected to LIBRARY (wlan0).",
+		"Found 469 subdomains, full list above.",
+		"TARGET UNREACHABLE — all tools reported connection failures.",
+	} {
+		if isDeferralAnswer(s) {
+			t.Errorf("expected final answer, not deferral: %q", s)
+		}
 	}
 }
 

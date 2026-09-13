@@ -10,7 +10,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/0xP4X/drogonclaw-go/internal/core"
-	"github.com/0xP4X/drogonclaw-go/internal/memory"
 	"github.com/0xP4X/drogonclaw-go/internal/skills"
 	"github.com/charmbracelet/lipgloss"
 	"golang.org/x/term"
@@ -495,11 +494,19 @@ func (m Model) renderSidebar(width, height int) string {
 		row("Objective", HintDescStyle.Render(objective))
 	}
 
-	section("MEMORY")
-	nodeCount := m.graph.NodeCount()
-	edgeCount := m.graph.EdgeCount()
-	row("Entities", StatusNodeStyle.Render(fmt.Sprintf("%d", nodeCount)))
-	row("Links", SidebarValueStyle.Render(fmt.Sprintf("%d", edgeCount)))
+	// Stats section — real operational metrics
+	if m.toolCount > 0 || m.findingCount > 0 || m.stepCount > 0 {
+		section("STATS")
+		if m.toolCount > 0 {
+			row("Tools run", SidebarValueStyle.Render(fmt.Sprintf("%d", m.toolCount)))
+		}
+		if m.stepCount > 0 {
+			row("Steps", SidebarValueStyle.Render(fmt.Sprintf("%d", m.stepCount)))
+		}
+		if m.findingCount > 0 {
+			row("Findings", StatusAlertStyle.Render(fmt.Sprintf("%d", m.findingCount)))
+		}
+	}
 
 	if m.cfg.GetString("TELEGRAM_TOKEN") != "" {
 		section("GATEWAY")
@@ -642,9 +649,12 @@ func (m Model) renderStatusReport() string {
 	sb.WriteString("  " + heading("ENVIRONMENT") + "\n")
 	sb.WriteString(row("Execution Engine", value(m.sandbox.RuntimeLabel())) + "\n")
 	sb.WriteString(row("Telegram Gateway", onOff(telegramReady, "READY")) + "\n\n")
-	sb.WriteString("  " + heading("INTELLIGENCE GRAPH") + "\n")
-	sb.WriteString(row("Graph Nodes", StatusNodeStyle.Render(fmt.Sprintf("%d", m.graph.NodeCount()))) + "\n")
-	sb.WriteString(row("Graph Edges", value(fmt.Sprintf("%d", m.graph.EdgeCount()))) + "\n")
+	sb.WriteString("  " + heading("PENTEST STATS") + "\n")
+	sb.WriteString(row("Tools Run", StatusNodeStyle.Render(fmt.Sprintf("%d", m.toolCount))) + "\n")
+	sb.WriteString(row("Steps Taken", value(fmt.Sprintf("%d", m.stepCount))) + "\n")
+	if m.findingCount > 0 {
+		sb.WriteString(row("Findings", StatusAlertStyle.Render(fmt.Sprintf("%d new", m.findingCount))) + "\n")
+	}
 	sb.WriteString(rule + "\n")
 
 	return sb.String()
@@ -824,31 +834,6 @@ func (m Model) renderAgentResponseString(content string) string {
 		}
 	}
 	return strings.Join(processed, "\n")
-}
-
-func (m Model) renderGraphSummary(graph *memory.Graph) string {
-	if graph == nil {
-		return WarningStyle.Render("[MEMORY] Graph unavailable")
-	}
-
-	var sb strings.Builder
-	sb.WriteString(HintBorderStyle.Render(fmt.Sprintf("[MEMORY] %d entities, %d relationships", graph.NodeCount(), graph.EdgeCount())) + "\n")
-
-	labelCounts := graph.LabelCounts()
-	labels := make([]string, 0, len(labelCounts))
-	for label := range labelCounts {
-		labels = append(labels, string(label))
-	}
-	sort.Strings(labels)
-	if len(labels) > 0 {
-		var parts []string
-		for _, label := range labels {
-			parts = append(parts, fmt.Sprintf("%s=%d", label, labelCounts[memory.NodeLabel(label)]))
-		}
-		sb.WriteString(ToolArgsStyle.Render("Entities: "+strings.Join(parts, ", ")) + "\n")
-	}
-
-	return strings.TrimRight(sb.String(), "\n")
 }
 
 func renderSkills(manifest *skills.Manifest, query string) string {

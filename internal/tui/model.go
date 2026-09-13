@@ -107,8 +107,9 @@ type Model struct {
 	relationCount int
 	totalTokens  int
 	totalCost    float64
-	recentTools  []string
-	findings     []string
+	recentTools      []string
+	findings         []string
+	lastFindingsIdx  int // tracks how many findings were shown inline on last EvDone
 }
 
 type cmdHint struct {
@@ -678,6 +679,10 @@ func (m *Model) handleInput(raw string) (*Model, tea.Cmd) {
 	promptLine := PromptGlyphStyle.Render("❯ ") + PromptUserStyle.Render(raw)
 	_ = opName
 	_ = agName
+	// Add a blank line before the prompt for turn separation (skip for very first line)
+	if len(m.lines) > 0 {
+		m.appendLine("")
+	}
 	m.appendLine(promptLine)
 	m.hints = nil
 
@@ -1034,6 +1039,7 @@ func (m *Model) newSession() tea.Cmd {
 		m.findingCount = 0
 		m.recentTools = nil
 		m.findings = nil
+		m.lastFindingsIdx = 0
 		return nil
 	}
 }

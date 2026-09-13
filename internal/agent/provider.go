@@ -231,6 +231,20 @@ func BuildMessages(systemPrompt string, memoryContext string, history []openai.C
 func IsChatOnly(msg string, graph *memory.Graph, opsecMgr *opsec.Manager) bool {
 	lower := strings.ToLower(strings.TrimSpace(msg))
 
+	// Never treat actionable OSINT / tool intents as chat, even if prefixed with a greeting.
+	// "hi, check my github" must go through Execute, not ExecuteChat.
+	actionableKeywords := []string{
+		"github", "osint", "shodan", "virustotal", "whois", "check my",
+		"search my", "lookup", "profile_target", "scan", "nmap", "nuclei",
+		"gobuster", "ffuf", "sqlmap", "subfinder", "httpx", "who am i",
+		"tell me about", "projects", "repos", "repositories",
+	}
+	for _, kw := range actionableKeywords {
+		if strings.Contains(lower, kw) {
+			return false
+		}
+	}
+
 	// Obvious greetings / small talk — no tools needed.
 	greetings := []string{
 		"hi", "hello", "hey", "greetings", "good morning", "good afternoon",

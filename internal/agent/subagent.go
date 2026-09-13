@@ -22,6 +22,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/openai/openai-go"
 )
 
 // SubagentTask represents a single unit of work to be executed by a subagent.
@@ -60,6 +62,63 @@ func NewSubagentManager(provider *Provider, tools *ToolRegistry, maxConcurrent i
 		provider: provider,
 		tools:    tools,
 		maxConc:  maxConcurrent,
+	}
+}
+
+// SpawnSubagent executes a single dedicated subagent task. If events is nil, events are ignored.
+func (sm *SubagentManager) SpawnSubagent(ctx context.Context, task SubagentTask, events chan<- Event) SubagentResult {
+	if events == nil {
+		ch := make(chan Event, 20)
+		go func() {
+			for range ch {
+			}
+		}()
+		events = ch
+	}
+
+	start := time.Now()
+	events <- Event{
+		Type:    EvStatus,
+		Content: fmt.Sprintf("[SUBAGENT:%s] Spawning subagent: %s...", task.ID, task.Name),
+	}
+
+	var output string
+	var err error
+
+	if task.Tool != "" {
+		output = sm.tools.Execute(ctx, task.Tool, marshalArgs(task.Args))
+	} else if task.Context != "" && sm.provider != nil {
+		subPrompt := fmt.Sprintf("You are a specialized pentesting subagent (%s).\nObjective: %s\nTarget context: %s\nAnalyze thoroughly and return your concise technical findings.", task.Name, task.Context, marshalArgs(task.Args))
+		messages := []openai.ChatCompletionMessageParamUnion{
+			openai.UserMessage(subPrompt),
+		}
+		resp, completeErr := sm.provider.CompleteFast(ctx, messages, nil)
+		if completeErr != nil {
+			resp, completeErr = sm.provider.Complete(ctx, messages, nil)
+		}
+		if completeErr != nil {
+			output = fmt.Sprintf("[Subagent Error] %v", completeErr)
+			err = completeErr
+		} else {
+			output = resp.Message.Content
+		}
+	} else {
+		output = fmt.Sprintf("[Subagent %s] No tool or prompt specified", task.ID)
+		err = fmt.Errorf("no tool or prompt specified")
+	}
+
+	duration := time.Since(start)
+	events <- Event{
+		Type:    EvStatus,
+		Content: fmt.Sprintf("[SUBAGENT:%s] Completed %s in %s", task.ID, task.Name, duration.Round(time.Second)),
+	}
+
+	return SubagentResult{
+		TaskID:   task.ID,
+		Tool:     task.Tool,
+		Output:   output,
+		Duration: duration,
+		Error:    err,
 	}
 }
 

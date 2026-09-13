@@ -179,6 +179,18 @@ func TestGroundingCatchesInventedMAC(t *testing.T) {
 	}
 }
 
+func TestGroundingIgnoresCommonWords(t *testing.T) {
+	recs := wifiEvidenceRecs()
+	for _, answer := range []string{
+		"To ensure I'm serving the correct operator, please share your handle.",
+		"The scan results ensure full coverage of the target.",
+	} {
+		if c := groundingCorrections(answer, recs); c != "" {
+			t.Errorf("common English words must not trip interface detection, got: %s", c)
+		}
+	}
+}
+
 func TestGroundingRequiresEvidence(t *testing.T) {
 	if c := groundingCorrections(hallucinatedWifiAnswer, nil); c != "" {
 		t.Errorf("expected no corrections without evidence, got: %s", c)

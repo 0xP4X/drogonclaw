@@ -192,26 +192,6 @@ func operationsCommands() []slashCommand {
 			},
 		},
 		{
-			names:    []string{"/report"},
-			category: catOperations,
-			desc:     "Generate a structured penetration test report",
-			run: func(m *Model, _ string) (*Model, tea.Cmd) {
-				m2, ctx, events, cmd := m.beginTask(5*time.Minute, "planning", "Generating penetration test report", 32)
-				go func() {
-					defer close(events)
-					events <- agent.Event{Type: agent.EvStatus, Content: "Drafting structured penetration test report..."}
-					reporter := core.NewReportGenerator(m.orch.GetProvider(), m.graph)
-					path, err := reporter.GenerateMarkdownReport(ctx)
-					if err != nil {
-						events <- agent.Event{Type: agent.EvError, Content: fmt.Sprintf("Report generation failed: %v", err)}
-					} else {
-						events <- agent.Event{Type: agent.EvDone, Content: fmt.Sprintf("Report generated: %s", path)}
-					}
-				}()
-				return m2, cmd
-			},
-		},
-		{
 			names:    []string{"/swarm"},
 			category: catOperations,
 			desc:     "Dispatch a parallel sub-agent swarm",
@@ -525,22 +505,34 @@ func sessionCommands() []slashCommand {
 	}
 }
 
-// handleFindingsSummary shows a summary of all detected findings
+// handleFindingsSummary shows a structured, color-coded summary of detected findings
 func (m *Model) handleFindingsSummary() (*Model, tea.Cmd) {
 	var sb strings.Builder
 	sb.WriteString("\n")
-	sb.WriteString(SectionHeaderStyle.Render("  FINDINGS SUMMARY") + "\n")
-	sb.WriteString(SectionRuleStyle.Render("  "+strings.Repeat("─", 60)) + "\n\n")
+	sb.WriteString(SectionHeaderStyle.Render("  🎯 DISCOVERED FINDINGS & LOOT SUMMARY") + "\n")
+	sb.WriteString(SectionRuleStyle.Render("  "+strings.Repeat("─", 64)) + "\n\n")
 
 	if len(m.findings) == 0 {
-		sb.WriteString(HintDescStyle.Render("  No findings detected yet.\n"))
+		sb.WriteString(HintDescStyle.Render("  No security findings detected in current session yet.\n"))
+		sb.WriteString(HintDescStyle.Render("  Run recon or exploitation tasks (e.g. /analyze target.com) to discover assets.\n\n"))
 	} else {
-		sb.WriteString(fmt.Sprintf("  Total findings: %d\n\n", len(m.findings)))
-		for i, f := range m.findings {
-			sb.WriteString(fmt.Sprintf("  %d. %s\n", i+1, f))
+		sb.WriteString(fmt.Sprintf("  Total Session Findings: %d\n\n", len(m.findings)))
+		for _, f := range m.findings {
+			badge := ToolDoneStyle.Render(" [FINDING] ")
+			low := strings.ToLower(f)
+			if strings.Contains(low, "flag") || strings.Contains(low, "ctf") {
+				badge = StatusOnStyle.Render(" 🚩 FLAG ")
+			} else if strings.Contains(low, "cve-") || strings.Contains(low, "vulnerability") || strings.Contains(low, "critical") || strings.Contains(low, "rce") || strings.Contains(low, "sqli") {
+				badge = StatusAlertStyle.Render(" ⚡ VULN ")
+			} else if strings.Contains(low, "cred") || strings.Contains(low, "password") || strings.Contains(low, "hash") || strings.Contains(low, "user") {
+				badge = WarningStyle.Render(" 🔑 CRED ")
+			} else if strings.Contains(low, "port") || strings.Contains(low, "service") {
+				badge = InfoStyle.Render(" 🔍 ASSET ")
+			}
+			sb.WriteString(fmt.Sprintf("  %s %s\n", badge, f))
 		}
+		sb.WriteString("\n")
 	}
-	sb.WriteString("\n")
 	m.appendLine(sb.String())
 	return m, nil
 }

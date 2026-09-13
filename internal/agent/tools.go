@@ -117,6 +117,9 @@ type ToolRegistry struct {
 	// SkillLearner learns from successful attacks (inspired by Hermes Agent).
 	// After a verified success, the technique is saved as a reusable skill.
 	skillLearner *SkillLearner
+
+	// Subagents enables autonomous subagent delegation and parallel workstreams
+	subagents *SubagentManager
 }
 
 const shellDedupWindow = 60 * time.Second
@@ -150,6 +153,11 @@ func NewToolRegistry(manifest *skills.Manifest, sb *sandbox.Docker, val *Evidenc
 	}
 	r.registerBuiltins()
 	return r
+}
+
+// SetSubagents connects the SubagentManager for subagent delegation tools.
+func (r *ToolRegistry) SetSubagents(sm *SubagentManager) {
+	r.subagents = sm
 }
 
 // VerifySuccess checks whether a tool result contains verified evidence of success.
@@ -1238,6 +1246,10 @@ func (r *ToolRegistry) registerBuiltins() {
 		return result
 	}
 
+	r.builtins["health_status"] = func(ctx context.Context, args map[string]any) string {
+		return r.systemDiagnostics(ctx)
+	}
+
 	r.builtins["python_execute"] = func(ctx context.Context, args map[string]any) string {
 		script, _ := args["script"].(string)
 		if script == "" {
@@ -1276,12 +1288,13 @@ func (r *ToolRegistry) registerBuiltins() {
 	}
 
 	r.builtins["update_neural_memory"] = func(ctx context.Context, args map[string]any) string {
-		id, _ := args["id"].(string)
-		label, _ := args["label"].(string)
-		data, _ := args["data"].(string)
-		sourceID, _ := args["source_id"].(string)
-		targetID, _ := args["target_id"].(string)
-		relationship, _ := args["relationship"].(string)
+		id := coerceStringArg(args, "id")
+		label := coerceStringArg(args, "label")
+		dataRaw := args["data"]
+		data := coerceDataToString(dataRaw)
+		sourceID := coerceStringArg(args, "source_id")
+		targetID := coerceStringArg(args, "target_id")
+		relationship := coerceStringArg(args, "relationship")
 		if label == "" {
 			return "[Error] label is required (e.g. Target, Asset, Port, Service, Vulnerability, Credential, Flag)"
 		}
@@ -1293,9 +1306,10 @@ func (r *ToolRegistry) registerBuiltins() {
 			id = fmt.Sprintf("%s-%x", strings.ToLower(label), sum[:6])
 		}
 
-		// Use the evidence validator to verify the finding against
-		// the most recent observation, not a generic context string.
-		if r.validator != nil && len(r.recentEvidence) > 0 {
+		// Operator identity comes from the human directly, never from tool
+		// output, so it is exempt from evidence validation. Everything else
+		// is verified against the most recent observation.
+		if !strings.EqualFold(label, "operator") && r.validator != nil && len(r.recentEvidence) > 0 {
 			latest := r.recentEvidence[len(r.recentEvidence)-1]
 			valRes, err := r.validator.Validate(ctx, latest.Tool, latest.Summary, data)
 			if err == nil && !valRes.IsValid {
@@ -1317,8 +1331,9 @@ func (r *ToolRegistry) registerBuiltins() {
 
 		// Update Operator Profile if memory graph is available
 		if r.graph != nil && strings.ToLower(label) == "operator" {
-			r.graph.UpdateOperatorProfile(&memory.OperatorProfile{Name: data})
-			return fmt.Sprintf("[Memory] Acknowledged Operator identity: %s. The prompt will now reflect this.", data)
+			name := operatorNameFromData(data)
+			r.graph.UpdateOperatorProfile(&memory.OperatorProfile{Name: name})
+			return fmt.Sprintf("[Memory] Acknowledged Operator identity: %s. The prompt will now reflect this.", name)
 		}
 
 		if r.graph != nil {
@@ -2711,6 +2726,103 @@ OUTPUT ONLY THE SOURCE CODE. NO EXPLANATIONS. NO MARKDOWN.`, command)
 		}
 		return out
 	}
+	r.builtins["spawn_subagent"] = func(ctx context.Context, args map[string]any) string {
+		name, _ := args["name"].(string)
+		agentType, _ := args["agent_type"].(string)
+		prompt, _ := args["prompt"].(string)
+		target, _ := args["target"].(string)
+
+		if name == "" {
+			name = "Subagent"
+		}
+		if prompt == "" && target == "" {
+			return "[Error] prompt or target required for spawn_subagent"
+		}
+
+		if r.subagents == nil {
+			r.subagents = NewSubagentManager(r.provider, r, 5)
+		}
+
+		taskID := fmt.Sprintf("subagent_%d", time.Now().UnixNano()%10000)
+		task := SubagentTask{
+			ID:      taskID,
+			Name:    fmt.Sprintf("%s (%s)", name, agentType),
+			Context: prompt,
+			Args:    map[string]any{"target": target, "agent_type": agentType},
+		}
+
+		res := r.subagents.SpawnSubagent(ctx, task, nil)
+		if res.Error != nil {
+			return fmt.Sprintf("[SUBAGENT FAILURE — %s]\nError: %v\nPartial Output:\n%s", name, res.Error, res.Output)
+		}
+		return fmt.Sprintf("[SUBAGENT COMPLETE — %s] (Duration: %s)\n%s", name, res.Duration.Round(time.Second), res.Output)
+	}
+	r.builtins["run_parallel_subagents"] = func(ctx context.Context, args map[string]any) string {
+		tasksRaw, ok := args["tasks"].([]interface{})
+		if !ok || len(tasksRaw) == 0 {
+			if target, _ := args["target"].(string); target != "" {
+				tasks := StandardReconTasks(target)
+				if r.subagents == nil {
+					r.subagents = NewSubagentManager(r.provider, r, 5)
+				}
+				results := r.subagents.ExecuteParallel(ctx, tasks, nil)
+				return FormatResultsForLLM(results)
+			}
+			return "[Error] tasks list or target parameter required"
+		}
+
+		var tasks []SubagentTask
+		for i, tr := range tasksRaw {
+			tm, isMap := tr.(map[string]interface{})
+			if !isMap {
+				continue
+			}
+			id, _ := tm["id"].(string)
+			if id == "" {
+				id = fmt.Sprintf("task_%d", i+1)
+			}
+			tName, _ := tm["name"].(string)
+			if tName == "" {
+				tName = id
+			}
+			tool, _ := tm["tool"].(string)
+			contextStr, _ := tm["context"].(string)
+
+			tArgs, _ := tm["args"].(map[string]interface{})
+			if tArgs == nil {
+				tArgs = make(map[string]interface{})
+			}
+
+			var deps []string
+			if depsRaw, ok := tm["depends_on"].([]interface{}); ok {
+				for _, d := range depsRaw {
+					if ds, ok := d.(string); ok {
+						deps = append(deps, ds)
+					}
+				}
+			}
+
+			tasks = append(tasks, SubagentTask{
+				ID:        id,
+				Name:      tName,
+				Tool:      tool,
+				Context:   contextStr,
+				Args:      tArgs,
+				DependsOn: deps,
+			})
+		}
+
+		if len(tasks) == 0 {
+			return "[Error] No valid tasks parsed"
+		}
+
+		if r.subagents == nil {
+			r.subagents = NewSubagentManager(r.provider, r, 5)
+		}
+
+		results := r.subagents.ExecuteParallel(ctx, tasks, nil)
+		return FormatResultsForLLM(results)
+	}
 }
 
 // buildSkillCommand translates a skill name + args into a functional shell command.
@@ -2876,6 +2988,136 @@ func buildSkillCommand(name string, args map[string]any) string {
 		cmd := strings.Join(parts, " ")
 		return fmt.Sprintf("which %s >/dev/null 2>&1 && %s || searchsploit '%s' 2>/dev/null || %s", binName, cmd, name, cmd)
 	}
+}
+
+func (r *ToolRegistry) systemDiagnostics(ctx context.Context) string {
+	type critTool struct{ name, category string }
+	critical := []critTool{
+		{"nmap", "Recon"}, {"gobuster", "Web"}, {"sqlmap", "Web"},
+		{"nuclei", "Vuln Scan"}, {"searchsploit", "Exploit DB"},
+		{"msfconsole", "Post-Exploit"}, {"hydra", "Brute Force"},
+		{"python3", "Scripting"}, {"curl", "HTTP"}, {"go", "Compilation"},
+	}
+	present := map[string]bool{}
+	if r.sandbox != nil {
+		names := make([]string, 0, len(critical))
+		for _, t := range critical {
+			names = append(names, t.name)
+		}
+		if out, err := r.sandbox.Execute(ctx, "for t in "+strings.Join(names, " ")+"; do command -v $t >/dev/null 2>&1 && echo \"OK $t\" || echo \"MISSING $t\"; done"); err == nil {
+			for _, line := range strings.Split(out, "\n") {
+				if m := regexp.MustCompile(`^OK (\S+)`).FindStringSubmatch(strings.TrimSpace(line)); m != nil {
+					present[m[1]] = true
+				}
+			}
+		}
+	}
+	var b strings.Builder
+	b.WriteString("=== DROGONCLAW SYSTEM DIAGNOSTICS ===\n\n[Tool Availability]\n")
+	installed := 0
+	for _, t := range critical {
+		if present[t.name] {
+			installed++
+			fmt.Fprintf(&b, "  ✓ %s (%s) — INSTALLED\n", t.name, t.category)
+		} else {
+			fmt.Fprintf(&b, "  ✗ %s (%s) — MISSING\n", t.name, t.category)
+		}
+	}
+	fmt.Fprintf(&b, "\n  Overall Tool Readiness: %d%%\n", installed*100/len(critical))
+	fmt.Fprintf(&b, "\n[Execution Environment]\n  Mode: %s\n", r.executionModeLabel())
+	return b.String()
+}
+
+func coerceStringArg(args map[string]any, key string) string {
+	v, ok := args[key]
+	if !ok || v == nil {
+		return ""
+	}
+	switch x := v.(type) {
+	case string:
+		return strings.TrimSpace(x)
+	case map[string]any:
+		if b, err := json.Marshal(x); err == nil {
+			return string(b)
+		}
+		return fmt.Sprint(x)
+	case []any:
+		if b, err := json.Marshal(x); err == nil {
+			return string(b)
+		}
+		return fmt.Sprint(x)
+	case float64:
+		if x == float64(int64(x)) {
+			return fmt.Sprintf("%.0f", x)
+		}
+		return fmt.Sprint(x)
+	case bool:
+		return fmt.Sprintf("%t", x)
+	default:
+		return strings.TrimSpace(fmt.Sprint(v))
+	}
+}
+
+func coerceDataToString(v any) string {
+	if v == nil {
+		return ""
+	}
+	switch x := v.(type) {
+	case string:
+		trimmed := strings.TrimSpace(x)
+		// Handle Go map repr: "map[alias:0xp4x handle:0xp4x operator_type:human]"
+		if strings.HasPrefix(trimmed, "map[") && strings.HasSuffix(trimmed, "]") {
+			inner := trimmed[4 : len(trimmed)-1]
+			for _, field := range strings.Fields(inner) {
+				parts := strings.SplitN(field, ":", 2)
+				if len(parts) == 2 {
+					k := strings.TrimSpace(parts[0])
+					val := strings.TrimSpace(parts[1])
+					if (k == "alias" || k == "handle" || k == "name" || k == "operator") && val != "" {
+						return val
+					}
+				}
+			}
+		}
+		return trimmed
+	case map[string]any:
+		if b, err := json.Marshal(x); err == nil {
+			return string(b)
+		}
+		return fmt.Sprint(x)
+	default:
+		return coerceStringArg(map[string]any{"data": v}, "data")
+	}
+}
+
+func operatorNameFromData(data string) string {
+	trimmed := strings.TrimSpace(data)
+	if trimmed == "" {
+		return ""
+	}
+	// Also handle Go-map repr embedded in string (model passed fmt.Sprint(map))
+	if strings.HasPrefix(trimmed, "map[") && strings.HasSuffix(trimmed, "]") {
+		inner := trimmed[4 : len(trimmed)-1]
+		for _, field := range strings.Fields(inner) {
+			parts := strings.SplitN(field, ":", 2)
+			if len(parts) == 2 {
+				k := strings.TrimSpace(parts[0])
+				val := strings.TrimSpace(parts[1])
+				if (k == "alias" || k == "handle" || k == "name" || k == "operator") && val != "" {
+					return val
+				}
+			}
+		}
+	}
+	var m map[string]any
+	if err := json.Unmarshal([]byte(trimmed), &m); err == nil {
+		for _, k := range []string{"alias", "name", "handle", "operator"} {
+			if v, ok := m[k].(string); ok && strings.TrimSpace(v) != "" {
+				return strings.TrimSpace(v)
+			}
+		}
+	}
+	return trimmed
 }
 
 func parseMemoryProperties(data string) map[string]any {

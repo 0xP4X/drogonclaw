@@ -962,5 +962,51 @@ func toolWrapperDefinitions() []openai.ChatCompletionToolParam {
 				},
 			},
 		},
+		{
+			Type: "function",
+			Function: openai.FunctionDefinitionParam{
+				Name:        "spawn_subagent",
+				Description: openai.String("Spawns an isolated subagent for a specialized pentesting workstream (recon, web audit, vulnerability research, code audit, or exploit writing) with zero context-cost turns."),
+				Parameters: openai.FunctionParameters{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"name":       map[string]interface{}{"type": "string", "description": "Human-readable subagent name e.g. 'Web Recon Subagent', 'Code Auditor'"},
+						"agent_type": map[string]interface{}{"type": "string", "description": "recon | web | exploit | code | general"},
+						"prompt":     map[string]interface{}{"type": "string", "description": "Detailed instructions and objective for the subagent"},
+						"target":     map[string]interface{}{"type": "string", "description": "Target domain, IP, URL, or file path"},
+					},
+					"required": []string{"name", "prompt"},
+				},
+			},
+		},
+		{
+			Type: "function",
+			Function: openai.FunctionDefinitionParam{
+				Name:        "run_parallel_subagents",
+				Description: openai.String("Executes multiple independent pentesting subagents or tool tasks concurrently in parallel workstreams. Dramatically accelerates recon, multi-port fuzzing, and vulnerability scanning."),
+				Parameters: openai.FunctionParameters{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"target": map[string]interface{}{"type": "string", "description": "Target domain or IP (if running preset parallel recon)"},
+						"tasks": map[string]interface{}{
+							"type":        "array",
+							"description": "List of subagent tasks to execute in parallel",
+							"items": map[string]interface{}{
+								"type": "object",
+								"properties": map[string]interface{}{
+									"id":         map[string]interface{}{"type": "string", "description": "Unique task ID e.g. 'task_1'"},
+									"name":       map[string]interface{}{"type": "string", "description": "Task label e.g. 'Nmap Port Scan'"},
+									"tool":       map[string]interface{}{"type": "string", "description": "Tool name e.g. 'run_nmap', 'run_httpx', 'run_gobuster'"},
+									"context":    map[string]interface{}{"type": "string", "description": "Instructions for the subagent task"},
+									"args":       map[string]interface{}{"type": "object", "description": "Arguments object for the tool"},
+									"depends_on": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Task IDs that must finish before this task runs"},
+								},
+								"required": []string{"id", "name"},
+							},
+						},
+					},
+				},
+			},
+		},
 	}
 }

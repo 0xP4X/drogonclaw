@@ -20,7 +20,7 @@ import (
 var (
 	// ifaceTokenRe matches kernel network-interface identifiers in tool output
 	// and in the agent's final answer (eth0, wlan0, enp3s0, docker0, ...).
-	ifaceTokenRe = regexp.MustCompile(`(?i)\b(?:eth\d+|wlan\d+|wlp\w+|wifi\d+|enp\w+|ens\w+|eno\d+|en\w+\d+|wwan\d+|docker\d+|virbr\d+|tap\d+|tun\d+|veth\w+|bond\d+|br-\w+)\b`)
+	ifaceTokenRe = regexp.MustCompile(`(?i)\b(?:eth\d+|wlan\d+|wlp\w+|wifi\d+|enp\d+s\d+|ens\d+|eno\d+|en\w+\d+|wwan\d+|docker\d+|virbr\d+|tap\d+|tun\d+|veth\w+|bond\d+|br-\w+)\b`)
 
 	// loTokenRe matches the loopback interface name as a standalone token so it
 	// does not collide with words like "hello" or "protocol".

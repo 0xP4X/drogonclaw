@@ -293,12 +293,27 @@ func isSimpleFactualQuery(msg string) bool {
 	return false
 }
 
-var essidRe = regexp.MustCompile(`ESSID:"([^"]+)"`)
+var essidRe = regexp.MustCompile(`(?i)(?:ESSID:|yes:)([^\r\n"]+)`)
+
+func isDeferralAnswer(s string) bool {
+	low := strings.ToLower(s)
+	for _, p := range []string{
+		"stand by", "standby", "please wait", "still working",
+		"currently gathering", "currently collecting", "currently running",
+		"once the data", "once the results", "in progress",
+		"gathering information", "will report back",
+	} {
+		if strings.Contains(low, p) {
+			return true
+		}
+	}
+	return false
+}
 
 func extractKnownAnswer(recs []toolOutputEvidence) string {
 	for i := len(recs) - 1; i >= 0; i-- {
 		if m := essidRe.FindStringSubmatch(recs[i].output); m != nil {
-			return m[1]
+			return strings.TrimSpace(m[1])
 		}
 	}
 	for i := len(recs) - 1; i >= 0; i-- {
@@ -351,7 +366,7 @@ func NewOrchestratorWithJournal(provider *Provider, tools *ToolRegistry, sysProm
 	if maxIterations <= 0 {
 		maxIterations = 20
 	}
-	return &Orchestrator{
+	o := &Orchestrator{
 		provider:       provider,
 		tools:          tools,
 		sysPrompt:      sysPrompt,
@@ -362,6 +377,10 @@ func NewOrchestratorWithJournal(provider *Provider, tools *ToolRegistry, sysProm
 		graph:          graph,
 		subagents:      NewSubagentManager(provider, tools, 5),
 	}
+	if tools != nil {
+		tools.SetSubagents(o.subagents)
+	}
+	return o
 }
 
 func (o *Orchestrator) GetProvider() *Provider {
@@ -520,6 +539,8 @@ func (o *Orchestrator) Execute(ctx context.Context, userMsg string, events chan<
 	finalizeNudged := false
 	blockedStreak := 0
 	blockedNudged := false
+	toolsExecutedThisRun := 0
+	deferralNudged := false
 	for i := 0; i < maxIter; i++ {
 		var resp *CompletionResponse
 		var err error
@@ -614,6 +635,15 @@ func (o *Orchestrator) Execute(ctx context.Context, userMsg string, events chan<
 					}
 					o.retainHistory()
 				}
+			}
+
+			if !deferralNudged && toolsExecutedThisRun > 0 && isDeferralAnswer(finalContent) {
+				nudge := "[SYSTEM] The tool results above are already complete — nothing is still running. Synthesize the final report for the operator NOW from these results with NO further tool calls. Do not say 'stand by'."
+				messages = append(messages, openai.UserMessage(nudge))
+				o.history = append(o.history, openai.UserMessage(nudge))
+				o.retainHistory()
+				deferralNudged = true
+				continue
 			}
 
 			// Grounding: deterministically cross-check the final answer's
@@ -711,6 +741,7 @@ func (o *Orchestrator) Execute(ctx context.Context, userMsg string, events chan<
 			}
 
 			result := o.tools.Execute(ctx, tc.Function.Name, tc.Function.Arguments)
+			toolsExecutedThisRun++
 			o.recordToolCall(tc.Function.Name, tc.Function.Arguments)
 			o.appendToolEvidence(tc.Function.Name, result)
 			if !isFastPhaseTool(tc.Function.Name) {
@@ -862,13 +893,8 @@ func needsEvidenceReview(final string, recs []toolOutputEvidence) bool {
 	if len(final) >= 600 {
 		return true
 	}
-	for _, r := range recs {
-		if len(extractFindings(r.tool, r.output)) > 0 {
-			return true
-		}
-	}
 	low := strings.ToLower(final)
-	for _, kw := range []string{"tactical assessment", "exploitability score", "attack vector", "phase 1", "phase 2"} {
+	for _, kw := range []string{"tactical assessment", "exploitability score", "attack vector", "phase 1", "phase 2", "open port", "cve-", "flag{"} {
 		if strings.Contains(low, kw) {
 			return true
 		}

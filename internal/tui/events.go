@@ -38,6 +38,11 @@ func (m *Model) handleAgentEvent(ev agent.Event) []tea.Cmd {
 		m.lastStatus = ev.Content
 		m.phase = phaseFromStatus(ev.Content, m.phase)
 		m.phaseDetail = ev.Content
+		if strings.HasPrefix(ev.Content, "[SUBAGENT:") || strings.HasPrefix(ev.Content, "[PARALLEL]") {
+			badge := SubagentBadgeStyle.Render("SUBAGENT")
+			txt := SubagentTextStyle.Render(" " + ev.Content)
+			m.appendLine(fmt.Sprintf("%s %s", badge, txt))
+		}
 
 	case agent.EvApproval:
 		est := ev.Content
@@ -66,6 +71,12 @@ func (m *Model) handleAgentEvent(ev agent.Event) []tea.Cmd {
 		m.toolStartTime = time.Now()
 		m.stepCount++
 
+		// Track recent tools for sidebar display (keep last 10)
+		m.recentTools = append([]string{ev.Tool}, m.recentTools...)
+		if len(m.recentTools) > 10 {
+			m.recentTools = m.recentTools[:10]
+		}
+
 		// Log to session timeline
 		if m.sessionLog != nil {
 			m.sessionLog.LogToolStart(ev.Tool, ev.Args, m.stepCount, m.totalSteps)
@@ -88,6 +99,7 @@ func (m *Model) handleAgentEvent(ev agent.Event) []tea.Cmd {
 		m.phase = "verifying"
 		m.phaseDetail = ev.Tool
 		elapsed := time.Since(m.toolStartTime)
+		m.toolCount++ // track total tool executions
 
 		isError := strings.Contains(strings.ToLower(ev.Result), "error") ||
 			strings.Contains(strings.ToLower(ev.Result), "failed") ||
@@ -109,6 +121,9 @@ func (m *Model) handleAgentEvent(ev agent.Event) []tea.Cmd {
 			if m.sessionLog != nil {
 				m.sessionLog.LogFinding(finding.Type, finding.Description, finding.Source)
 			}
+			// Accumulate in model so sidebar + /findings command can display them
+			m.findings = append(m.findings, fmt.Sprintf("[%s] %s", strings.ToUpper(finding.Type), finding.Description))
+			m.findingCount++
 		}
 
 		if isError {
@@ -152,6 +167,16 @@ func (m *Model) handleAgentEvent(ev agent.Event) []tea.Cmd {
 		m.phaseDetail = summarizeResult(ev.Content, 120)
 		m.lastPlan = nil
 		m.cancelFn = nil
+
+		// Auto-surface any findings accumulated this turn
+		if sessionFindings := m.sessionFindingsSince(m.lastFindingsIdx); len(sessionFindings) > 0 {
+			m.appendLine(m.renderInlineFindingsBadges(sessionFindings))
+			m.lastFindingsIdx += len(sessionFindings)
+		}
+
+		// Subtle turn-end divider for visual clarity
+		m.appendLine(DividerStyle.Render("  " + strings.Repeat("·", 56)))
+
 		cmds = append(cmds, textarea.Blink)
 		m.updateViewportContent()
 		m.processQueue(&cmds)
@@ -173,6 +198,41 @@ func (m *Model) handleAgentEvent(ev agent.Event) []tea.Cmd {
 
 	cmds = append(cmds, waitForEvent(m.eventsCh()))
 	return cmds
+}
+
+// sessionFindingsSince returns the findings added since the given index.
+func (m *Model) sessionFindingsSince(fromIdx int) []string {
+	if fromIdx >= len(m.findings) {
+		return nil
+	}
+	return m.findings[fromIdx:]
+}
+
+// renderInlineFindingsBadges renders a compact one-liner badge strip for new
+// findings found during the current agent turn — shown automatically after
+// EvDone so the operator sees what was found without running /findings.
+func (m *Model) renderInlineFindingsBadges(newFindings []string) string {
+	if len(newFindings) == 0 {
+		return ""
+	}
+	var parts []string
+	for _, f := range newFindings {
+		low := strings.ToLower(f)
+		var badge string
+		switch {
+		case strings.Contains(low, "[flag]") || strings.Contains(low, "flag{") || strings.Contains(low, "ctf{"):
+			badge = StatusOnStyle.Render("🚩 FLAG") + " " + HintDescStyle.Render(truncateLine(f))
+		case strings.Contains(low, "[vulnerability]") || strings.Contains(low, "cve-") || strings.Contains(low, "rce") || strings.Contains(low, "sqli"):
+			badge = StatusAlertStyle.Render("⚡ VULN") + " " + HintDescStyle.Render(truncateLine(f))
+		case strings.Contains(low, "[credential]") || strings.Contains(low, "password") || strings.Contains(low, "hash"):
+			badge = WarningStyle.Render("🔑 CRED") + " " + HintDescStyle.Render(truncateLine(f))
+		default:
+			badge = InfoStyle.Render("🔍 FIND") + " " + HintDescStyle.Render(truncateLine(f))
+		}
+		parts = append(parts, "  "+badge)
+	}
+	header := SectionHeaderStyle.Render("  ─── Findings Detected ─────────────────────────────")
+	return header + "\n" + strings.Join(parts, "\n")
 }
 
 // processQueue launches the next queued prompt (if any) once the current task

@@ -1,9 +1,43 @@
 package agent
 
 import (
+	"context"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/0xP4X/drogonclaw-go/internal/memory"
 )
+
+func TestUpdateNeuralMemoryOperatorBypassesValidator(t *testing.T) {
+	r := &ToolRegistry{validator: NewEvidenceValidator(&Provider{}), graph: memory.NewGraph("test_op_bypass"), builtins: make(map[string]BuiltinFn)}
+	r.registerBuiltins()
+	r.recentEvidence = append(r.recentEvidence, toolEvidence{Tool: "osint_dns", Summary: "dns data", Timestamp: time.Now()})
+	out := r.builtins["update_neural_memory"](context.Background(), map[string]any{
+		"id": "operator", "label": "Operator", "data": `{"alias": "jigon"}`,
+	})
+	if strings.Contains(out, "[Rejected]") {
+		t.Fatalf("operator identity must never be validator-rejected, got: %s", out)
+	}
+	if got := r.graph.GetOperatorProfile().Name; got != "jigon" {
+		t.Fatalf("expected operator name jigon extracted from JSON, got %q", got)
+	}
+}
+
+func TestHealthStatusBuiltin(t *testing.T) {
+	r := &ToolRegistry{builtins: make(map[string]BuiltinFn)}
+	r.registerBuiltins()
+	out := r.builtins["health_status"](context.Background(), map[string]any{})
+	if !strings.Contains(out, "DROGONCLAW SYSTEM DIAGNOSTICS") {
+		t.Fatalf("expected diagnostics header, got: %s", out)
+	}
+	if !strings.Contains(out, "Overall Tool Readiness:") {
+		t.Fatalf("expected readiness line, got: %s", out)
+	}
+	if strings.Contains(out, "searchsploit") && strings.Contains(out, "No Results") {
+		t.Fatal("health_status must not fall through to exploit search")
+	}
+}
 
 func TestBuildMemoryEdgesInfersTargetRelationship(t *testing.T) {
 	props := map[string]any{"target_id": "target:example.com"}
