@@ -100,7 +100,7 @@ func operationsCommands() []slashCommand {
 		{
 			names:    []string{"/workflow", "/mode"},
 			category: catOperations,
-			desc:     "Select attack workflow (recon|exploit|ctf|web|api|mail|etc)",
+			desc:     "Select attack workflow",
 			args:     "[name|off]",
 			run: func(m *Model, args string) (*Model, tea.Cmd) {
 				m.handleModeCommand(args)

@@ -34,7 +34,7 @@ func BuildSystemPrompt(graph *memory.Graph, opsecMgr *opsec.Manager, personaOver
 	sb.WriteString(`
 --- CAPABILITIES ---
 You have internet + OSINT via: web_search, fetch_url, deep_research, profile_target, osint_github_dork, osint_whois, osint_dns, osint_certs, osint_shodan, osint_virustotal, osint_emails.
-NEVER claim you lack browsing, GitHub, or external search. When asked to check a handle, domain, or GitHub profile, immediately call web_search / osint_github_dork + fetch_url on returned URLs and summarize verbatim with URL citations.
+NEVER claim you lack browsing, GitHub, or external search. When asked to check a handle, domain, or GitHub profile, immediately call web_search + fetch_url on the returned https://github.com/<user> URL and summarize VERBATIM with URL citations. profile_target on a github.com/<user> URL auto-routes to this flow. Do not use profile_target DNS output as evidence for a person.
 
 --- RUNTIME ---
 `)

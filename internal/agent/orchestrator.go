@@ -144,21 +144,25 @@ func buildToolEvidence(recs []toolOutputEvidence) string {
 // chunks long messages, but bounded output keeps the summary readable).
 const resultsAppendixMax = 6000
 
-// buildResultsAppendix renders the most-recent raw tool outputs (e.g. the full
-// subdomain list) for the operator. Unlike buildToolEvidence it walks the
-// window backwards so the newest results appear first, and truncates each block
-// so a single noisy tool cannot swallow the whole appendix.
+// buildResultsAppendix renders recent raw tool outputs collapsed by default
+// (opencode-style). The summary stays minimal; raw evidence is tucked behind
+// a markdown <details> so the TUI/glamour renders it collapsed.
 func buildResultsAppendix(recs []toolOutputEvidence) string {
 	var sb strings.Builder
-	sb.WriteString("\n\n--- RAW TOOL RESULTS ---\n")
+	sb.WriteString("\n\n<details><summary>Raw tool evidence (collapsed)</summary>\n\n```\n")
 	for i := len(recs) - 1; i >= 0; i-- {
 		if sb.Len() >= resultsAppendixMax {
 			break
 		}
 		r := recs[i]
-		block := "[" + r.tool + "]\n" + r.output + "\n"
-		if len(block) > 4000 {
-			block = block[:4000] + "\n…(truncated)…\n"
+		// Strip HTML-nav noise that pollutes fetch_url of github pages.
+		out := r.output
+		if r.tool == "fetch_url" {
+			out = trimFetchNoise(out)
+		}
+		block := "[" + r.tool + "]\n" + out + "\n"
+		if len(block) > 3500 {
+			block = block[:3500] + "\n…(truncated)…\n"
 		}
 		if sb.Len()+len(block) > resultsAppendixMax {
 			room := resultsAppendixMax - sb.Len()
@@ -169,7 +173,28 @@ func buildResultsAppendix(recs []toolOutputEvidence) string {
 		}
 		sb.WriteString(block)
 	}
+	sb.WriteString("```\n\n</details>\n")
 	return sb.String()
+}
+
+// trimFetchNoise removes GitHub/HTML navigation boilerplate from fetch_url
+// output so the appendix (and LLM context) stays focused on profile content.
+func trimFetchNoise(s string) string {
+	// Drop the repetitive nav menu that github.com pages include.
+	if idx := strings.Index(s, "Skip to content"); idx >= 0 {
+		s = s[idx:]
+	}
+	// Drop inline <nav> / <header> dumps if any survived.
+	for _, marker := range []string{"Product\nSolutions\n", "Search or jump to"} {
+		if idx := strings.Index(s, marker); idx >= 0 && idx < 600 {
+			s = s[idx+len(marker):]
+		}
+	}
+	s = strings.TrimSpace(s)
+	if len(s) > 3500 {
+		s = s[:3500] + "\n…(truncated)…"
+	}
+	return s
 }
 
 type toolCallRecord struct {
@@ -270,7 +295,45 @@ func normalizeShellCommand(cmd string) string {
 	s = strings.ReplaceAll(s, "2>/dev/null", "")
 	s = strings.ReplaceAll(s, "2> /dev/null", "")
 	s = strings.ReplaceAll(s, "| cat", "")
+	s = strings.TrimSpace(s)
+	low := strings.ToLower(s)
+	// Canonicalize only low-value shell network probes so the agent can't
+	// burn 6+ turns doing: curl -sL X, curl -v X, curl -I X, ping X ...
+	isProbe := strings.Contains(low, "curl ") || strings.Contains(low, "wget ") ||
+		strings.Contains(low, "ping ") || strings.Contains(low, "nslookup") ||
+		strings.HasPrefix(low, "dig ") || strings.Contains(low, " dig ") ||
+		strings.Contains(low, " host ")
+	if isProbe {
+		if host := extractNetworkTarget(s); host != "" {
+			kind := "fetch"
+			switch {
+			case strings.Contains(low, "ping "):
+				kind = "ping"
+			case strings.Contains(low, "nslookup"), strings.HasPrefix(low, "dig "), strings.Contains(low, " dig "), strings.Contains(low, " host "):
+				kind = "dns"
+			}
+			return kind + ":" + strings.ToLower(host)
+		}
+	}
 	return strings.Join(strings.Fields(s), " ")
+}
+
+var hostExtractRe = regexp.MustCompile(`(?i)(?:https?://)?([a-z0-9][-a-z0-9]*\.[a-z]{2,})(?:[:/\s]|$)`)
+
+func extractNetworkTarget(cmd string) string {
+	for _, tok := range strings.Fields(cmd) {
+		clean := strings.Trim(tok, "\"'`,;|")
+		if strings.HasPrefix(clean, "-") {
+			continue
+		}
+		if m := hostExtractRe.FindStringSubmatch(clean); m != nil {
+			return strings.ToLower(m[1])
+		}
+		if matched, _ := regexp.MatchString(`^\d{1,3}(\.\d{1,3}){3}$`, clean); matched {
+			return clean
+		}
+	}
+	return ""
 }
 
 func isSimpleFactualQuery(msg string) bool {

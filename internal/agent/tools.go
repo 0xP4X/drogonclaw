@@ -2271,6 +2271,49 @@ OUTPUT ONLY THE SOURCE CODE. NO EXPLANATIONS. NO MARKDOWN.`, command)
 	// ── INTELLIGENCE BUILTINS ───────────────────────────────────────────────
 	r.builtins["profile_target"] = func(ctx context.Context, args map[string]any) string {
 		target, _ := args["target"].(string)
+		trimmed := strings.TrimSpace(target)
+		low := strings.ToLower(trimmed)
+		// github.com/<user> is a people lookup — DNS/CT on the apex domain
+		// wastes a turn and misleads the planner. Route it as GitHub OSINT.
+		if strings.Contains(low, "github.com/") {
+			// extract handle for a focused search
+			handle := trimmed
+			if idx := strings.Index(low, "github.com/"); idx >= 0 {
+				handle = trimmed[idx+len("github.com/"):]
+				handle = strings.Trim(handle, "/")
+				if cut := strings.IndexAny(handle, "?#"); cut >= 0 {
+					handle = handle[:cut]
+				}
+				if slash := strings.Index(handle, "/"); slash >= 0 {
+					handle = handle[:slash]
+				}
+			}
+			if handle == "" {
+				handle = trimmed
+			}
+			var sb strings.Builder
+			sb.WriteString(fmt.Sprintf("[GITHUB PROFILE — %s]\nDirect profile: https://github.com/%s\n", handle, handle))
+			sb.WriteString("NOTE: profile_target DNS path is not applicable to a GitHub user. Use web_search + fetch_url for profile evidence.\n")
+			if r.cfg != nil {
+				if res, err := intel.Search(handle+" github profile", r.cfg.GetBraveAPIKey(), 5); err == nil && len(res) > 0 {
+					sb.WriteString("\n[web_search fallback]\n")
+					for i, rr := range res {
+						sb.WriteString(fmt.Sprintf("%d. %s\n   URL: %s\n", i+1, rr.Title, rr.URL))
+					}
+				}
+			}
+			fetched, ferr := intel.FetchURL("https://github.com/" + handle)
+			if ferr == nil && strings.TrimSpace(fetched) != "" {
+				clip := fetched
+				if len(clip) > 3500 {
+					clip = clip[:3500] + "\n…(truncated)…"
+				}
+				sb.WriteString("\n[fetch_url https://github.com/" + handle + "]\n" + clip + "\n")
+			} else if ferr != nil {
+				sb.WriteString(fmt.Sprintf("\n[fetch_url error] %v\n", ferr))
+			}
+			return sb.String()
+		}
 		profile, err := intel.BuildPublicProfile(target, r.cfg.GetShodanAPIKey(), r.cfg.GetVirusTotalAPIKey(), intel.DefaultProfileDependencies())
 		if err != nil {
 			return fmt.Sprintf("[Profile Error] %v", err)

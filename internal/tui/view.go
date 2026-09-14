@@ -442,151 +442,125 @@ func (m Model) renderSidebar(width, height int) string {
 		return ""
 	}
 
-	// Inner content width (subtract padding)
 	innerWidth := max(8, width-sidebarPadX*2-2)
+	// Reserve 2 lines for padding, clip content to height so sidebar never
+	// grows past the main pane (scales with terminal).
+	maxLines := max(8, height-2)
 
 	var sb strings.Builder
-
-	row := func(label, value string) {
-		valueWidth := max(4, innerWidth-14)
-		labelStyled := lipgloss.NewStyle().
-			Foreground(m.theme.TextDim).
-			Render(fmt.Sprintf("%-10s", label))
-		valueStyled := truncateVisible(value, valueWidth)
-		sb.WriteString(fmt.Sprintf(" %s %s\n", labelStyled, valueStyled))
-	}
-
-	section := func(title string) {
-		if sb.Len() > 0 {
-			sb.WriteString("\n")
+	lineCount := 0
+	addLine := func(s string) bool {
+		if lineCount >= maxLines {
+			return false
 		}
-		titleStyled := lipgloss.NewStyle().
-			Foreground(m.theme.TextMuted).
-			Bold(true).
-			Render(title)
+		sb.WriteString(s + "\n")
+		lineCount++
+		return true
+	}
+
+	row := func(label, value string) bool {
+		if lineCount >= maxLines {
+			return false
+		}
+		valueWidth := max(4, innerWidth-14)
+		labelStyled := lipgloss.NewStyle().Foreground(m.theme.TextDim).Render(fmt.Sprintf("%-10s", label))
+		valueStyled := truncateVisible(value, valueWidth)
+		return addLine(fmt.Sprintf(" %s %s", labelStyled, valueStyled))
+	}
+
+	section := func(title string) bool {
+		if lineCount+2 > maxLines {
+			return false
+		}
+		if sb.Len() > 0 {
+			if !addLine("") {
+				return false
+			}
+		}
+		titleStyled := lipgloss.NewStyle().Foreground(m.theme.TextMuted).Bold(true).Render(title)
 		ruleStyle := lipgloss.NewStyle().Foreground(m.theme.BorderSubtle)
-		sb.WriteString(titleStyled + "\n")
-		sb.WriteString(ruleStyle.Render(strings.Repeat("─", max(4, innerWidth-1))) + "\n")
+		addLine(titleStyled)
+		addLine(ruleStyle.Render(strings.Repeat("─", max(4, innerWidth-1))))
+		return true
 	}
 
+	// SESSION — minimal: session, model, phase only
 	section("SESSION")
-	activeMode := "default"
-	if m.activeMode != "" {
-		activeMode = m.activeMode
-	}
-	elapsed := "idle"
-	if !m.execStartTime.IsZero() && m.executing {
-		elapsed = time.Since(m.execStartTime).Round(time.Second).String()
-	}
-
 	provider := fallback(m.cfg.GetProvider(), "none")
 	model := fallback(m.cfg.GetModel(), "none")
-
-	sessionId := truncateVisible(m.sessionID, max(4, innerWidth-14))
-	row("Session", HeaderInfoStyle.Render(sessionId))
-	row("Model", SidebarValueStyle.Render(truncate(provider+"/"+model, max(1, innerWidth-14))))
-	row("Workflow", SidebarValueStyle.Render(truncate(activeMode, max(1, innerWidth-14))))
-	row("Runtime", ColorizeElapsed(elapsed))
-	row("Phase", renderSidebarPhase(m.phase))
-
-	if m.lastObjective != "" {
-		objective := truncate(m.lastObjective, max(1, innerWidth-14))
-		row("Objective", HintDescStyle.Render(objective))
+	_ = row("Session", HeaderInfoStyle.Render(truncateVisible(m.sessionID, max(4, innerWidth-14))))
+	_ = row("Model", SidebarValueStyle.Render(truncate(provider+"/"+model, max(1, innerWidth-14))))
+	_ = row("Phase", renderSidebarPhase(m.phase))
+	if m.activeMode != "" && m.activeMode != "default" {
+		_ = row("Attack", SidebarValueStyle.Render(truncate(m.activeMode, max(1, innerWidth-14))))
 	}
 
-	// Stats section — real operational metrics
+	// STATS — compact single section
 	if m.toolCount > 0 || m.findingCount > 0 || m.stepCount > 0 {
-		section("STATS")
-		if m.toolCount > 0 {
-			row("Tools run", SidebarValueStyle.Render(fmt.Sprintf("%d", m.toolCount)))
-		}
-		if m.stepCount > 0 {
-			row("Steps", SidebarValueStyle.Render(fmt.Sprintf("%d", m.stepCount)))
-		}
-		if m.findingCount > 0 {
-			row("Findings", StatusAlertStyle.Render(fmt.Sprintf("%d", m.findingCount)))
-		}
-	}
-
-	if m.cfg.GetString("TELEGRAM_TOKEN") != "" {
-		section("GATEWAY")
-		telegramStatus := StatusOffStyle.Render("○ OFFLINE")
-		if m.cfg.GetString("TELEGRAM_CHAT_ID") != "" {
-			telegramStatus = StatusOnStyle.Render("● READY")
-		}
-		row("Telegram", telegramStatus)
-	}
-
-	section("CONTROLS")
-	runtimeLabel := m.sandbox.RuntimeLabel()
-	row("Sandbox", SidebarValueStyle.Render(runtimeLabel))
-
-	if m.autopilot {
-		row("Auto-run", StatusOnStyle.Render("● ON"))
-	} else {
-		row("Auto-run", StatusOffStyle.Render("○ OFF"))
-	}
-
-	if m.opsecMgr.IsActive() {
-		row("Rate limit", StatusOnStyle.Render("● ON"))
-	} else {
-		row("Rate limit", StatusOffStyle.Render("○ OFF"))
-	}
-
-	if m.lastPlan != nil {
-		section("EXECUTION PLAN")
-		row("Steps", SidebarValueStyle.Render(fmt.Sprintf("%d", len(m.lastPlan.Steps))))
-		row("Detail", HintDescStyle.Render(truncate(m.phaseDetail, max(1, innerWidth-14))))
-	}
-
-	if m.tracker != nil {
-		section("COST")
-		total := m.tracker.Total()
-		cost := m.tracker.TotalCost()
-		row("Prompt tokens", fmt.Sprintf("%d", total.PromptTokens))
-		row("Completion tokens", fmt.Sprintf("%d", total.CompletionTokens))
-		row("Total tokens", fmt.Sprintf("%d", total.TotalTokens))
-		row("Est. cost", fmt.Sprintf("$%.4f", cost))
-	}
-
-	// Tools section
-	if len(m.recentTools) > 0 {
-		section("TOOLS")
-		limit := len(m.recentTools)
-		if limit > 5 {
-			limit = 5
-		}
-		for i := 0; i < limit; i++ {
-			tool := m.recentTools[i]
-			toolStyle := lipgloss.NewStyle().Foreground(m.theme.Accent)
-			sb.WriteString(" " + toolStyle.Render("▶") + " " + truncate(tool, max(1, innerWidth-6)) + "\n")
-		}
-		if len(m.recentTools) > 5 {
-			sb.WriteString(" " + lipgloss.NewStyle().Foreground(m.theme.TextDim).Render(fmt.Sprintf("... +%d more", len(m.recentTools)-5)) + "\n")
-		}
-	}
-
-	// Findings section
-	if len(m.findings) > 0 {
-		section("FINDINGS")
-		limit := len(m.findings)
-		if limit > 5 {
-			limit = 5
-		}
-		for i := 0; i < limit; i++ {
-			finding := m.findings[i]
-			var findingStyle lipgloss.Style
-			if strings.Contains(strings.ToLower(finding), "critical") || strings.Contains(strings.ToLower(finding), "high") {
-				findingStyle = lipgloss.NewStyle().Foreground(m.theme.Error)
-			} else if strings.Contains(strings.ToLower(finding), "medium") || strings.Contains(strings.ToLower(finding), "warning") {
-				findingStyle = lipgloss.NewStyle().Foreground(m.theme.Warning)
-			} else {
-				findingStyle = lipgloss.NewStyle().Foreground(m.theme.Success)
+		if section("STATS") {
+			if m.toolCount > 0 {
+				_ = row("Tools", SidebarValueStyle.Render(fmt.Sprintf("%d", m.toolCount)))
 			}
-			sb.WriteString(" " + findingStyle.Render("●") + " " + truncate(finding, max(1, innerWidth-6)) + "\n")
+			if m.findingCount > 0 {
+				_ = row("Findings", StatusAlertStyle.Render(fmt.Sprintf("%d", m.findingCount)))
+			}
 		}
-		if len(m.findings) > 5 {
-			sb.WriteString(" " + lipgloss.NewStyle().Foreground(m.theme.TextDim).Render(fmt.Sprintf("... +%d more", len(m.findings)-5)) + "\n")
+	}
+
+	// COST — single compact line instead of 4 rows
+	if m.tracker != nil {
+		total := m.tracker.Total()
+		if total.TotalTokens > 0 {
+			if section("COST") {
+				cost := m.tracker.TotalCost()
+				// e.g. "1.2k tokens · $0.0034"
+				tokStr := fmt.Sprintf("%d", total.TotalTokens)
+				if total.TotalTokens >= 1000 {
+					tokStr = fmt.Sprintf("%.1fk", float64(total.TotalTokens)/1000)
+				}
+				_ = row("Tokens", SidebarValueStyle.Render(fmt.Sprintf("%s · $%.4f", tokStr, cost)))
+			}
+		}
+	}
+
+	// TOOLS — last 3 only, not 5; overflow hint
+	if len(m.recentTools) > 0 && lineCount+2 < maxLines {
+		if section("TOOLS") {
+			limit := min(3, len(m.recentTools))
+			limit = min(limit, maxLines-lineCount-1)
+			for i := 0; i < limit; i++ {
+				tool := m.recentTools[i]
+				toolStyle := lipgloss.NewStyle().Foreground(m.theme.Accent)
+				_ = addLine(" " + toolStyle.Render("▶") + " " + truncate(tool, max(1, innerWidth-6)))
+			}
+			if len(m.recentTools) > limit {
+				_ = addLine(" " + lipgloss.NewStyle().Foreground(m.theme.TextDim).Render(fmt.Sprintf("… +%d more", len(m.recentTools)-limit)))
+			}
+		}
+	}
+
+	// FINDINGS — last 3 only
+	if len(m.findings) > 0 && lineCount+2 < maxLines {
+		if section("FINDINGS") {
+			limit := min(3, len(m.findings))
+			limit = min(limit, maxLines-lineCount-1)
+			for i := 0; i < limit; i++ {
+				finding := m.findings[i]
+				var findingStyle lipgloss.Style
+				low := strings.ToLower(finding)
+				switch {
+				case strings.Contains(low, "critical") || strings.Contains(low, "high"):
+					findingStyle = lipgloss.NewStyle().Foreground(m.theme.Error)
+				case strings.Contains(low, "medium") || strings.Contains(low, "warning"):
+					findingStyle = lipgloss.NewStyle().Foreground(m.theme.Warning)
+				default:
+					findingStyle = lipgloss.NewStyle().Foreground(m.theme.Success)
+				}
+				_ = addLine(" " + findingStyle.Render("●") + " " + truncate(finding, max(1, innerWidth-6)))
+			}
+			if len(m.findings) > limit {
+				_ = addLine(" " + lipgloss.NewStyle().Foreground(m.theme.TextDim).Render(fmt.Sprintf("… +%d more", len(m.findings)-limit)))
+			}
 		}
 	}
 
@@ -978,22 +952,21 @@ func (m Model) renderHints() string {
 	navHint := lipgloss.NewStyle().Foreground(m.theme.TextDim).Render("↑↓ select · Tab accept")
 	content += navHint + "\n"
 
+	panelWidth := min(m.width, 72)
+	innerW := max(20, panelWidth-4) // minus border+padding
 	var lines []string
 	for i := startIdx; i < len(hints) && i-startIdx < maxVisible; i++ {
 		h := hints[i]
 		prefix := "  "
 		cmdStr := HintCmdStyle.Render(h.cmd)
-		descStr := HintDescStyle.Render(truncateVisible(h.desc, max(20, m.width-30)))
 		if i == m.selectedHint {
-			prefix = lipgloss.NewStyle().
-				Foreground(m.theme.Primary).
-				Bold(true).
-				Render(" ▸")
-			cmdStr = lipgloss.NewStyle().
-				Foreground(m.theme.Primary).
-				Bold(true).
-				Render(h.cmd)
+			prefix = lipgloss.NewStyle().Foreground(m.theme.Primary).Bold(true).Render(" ▸")
+			cmdStr = lipgloss.NewStyle().Foreground(m.theme.Primary).Bold(true).Render(h.cmd)
 		}
+		// Keep each hint on exactly one row — no wrap. Truncate desc to fit panel.
+		cmdW := lipgloss.Width(h.cmd) + 3 // prefix + gap
+		descAvail := max(8, innerW-cmdW-2)
+		descStr := HintDescStyle.Render(truncateVisible(h.desc, descAvail))
 		lines = append(lines, fmt.Sprintf("%s %s  %s", prefix, cmdStr, descStr))
 	}
 
@@ -1004,7 +977,7 @@ func (m Model) renderHints() string {
 		BorderForeground(m.theme.BorderActive).
 		Background(m.theme.BackgroundPanel).
 		Padding(0, 1).
-		Width(min(m.width, 72))
+		Width(panelWidth)
 
 	return panel.Render(content)
 }

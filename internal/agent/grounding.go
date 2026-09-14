@@ -204,10 +204,11 @@ func groundingCorrections(final string, recs []toolOutputEvidence) string {
 	return "the summary makes claims that contradict the recorded tool evidence:\n- " + strings.Join(warns, "\n- ")
 }
 
-// ungroundedOSINTWarnings flags ungrounded persona synthesis when OSINT tools ran
-// but returned only URLs/repos without biographical claims.
+// ungroundedOSINTWarnings flags ungrounded persona/repo synthesis when OSINT tools
+// ran but the final cites no fetched URL or repo evidence (generic hallucination).
 func ungroundedOSINTWarnings(final string, recs []toolOutputEvidence) []string {
 	var osintToolRan bool
+	var hasFetchedProfile bool
 	var hasEvidenceContent bool
 	for _, r := range recs {
 		if strings.HasPrefix(r.tool, "osint_") || r.tool == "web_search" || r.tool == "fetch_url" {
@@ -215,16 +216,42 @@ func ungroundedOSINTWarnings(final string, recs []toolOutputEvidence) []string {
 			if len(strings.TrimSpace(r.output)) > 20 {
 				hasEvidenceContent = true
 			}
+			if r.tool == "fetch_url" && strings.Contains(strings.ToLower(r.output), "github.com") {
+				hasFetchedProfile = true
+			}
+			if r.tool == "fetch_url" && len(strings.TrimSpace(r.output)) > 200 {
+				hasFetchedProfile = true
+			}
 		}
 	}
 	if !osintToolRan || !hasEvidenceContent {
 		return nil
 	}
 	low := strings.ToLower(final)
-	// Check for speculative profile buzzwords when raw tools only returned bare links
-	if (strings.Contains(low, "security researcher") || strings.Contains(low, "reverse engineering specialist") || strings.Contains(low, "ctf player")) &&
-		!strings.Contains(low, "http://") && !strings.Contains(low, "https://") && !strings.Contains(low, "github.com") {
-		return []string{"synthesized a speculative bio without citing fetched URLs or verified repositories"}
+	hasCitation := strings.Contains(low, "http://") || strings.Contains(low, "https://") || strings.Contains(low, "github.com")
+	if hasCitation {
+		return nil
+	}
+	// Generic hallucination signals: claims about repos/activity/stack with zero citations
+	speculative := []string{
+		"security researcher", "reverse engineering", "ctf player",
+		"ctf (capture the flag)", "capture the flag",
+		"binary exploitation", "exploit development",
+		"star counts", "commit history", "contribution history",
+		"diverse project portfolio", "active contribution",
+		"username pattern", "\"0x\" prefix",
+	}
+	for _, phrase := range speculative {
+		if strings.Contains(low, phrase) {
+			if !hasFetchedProfile {
+				return []string{"synthesized a speculative bio/repos claim without citing fetched URLs or verified repositories — cite fetch_url output verbatim"}
+			}
+			return []string{"made profile/repo claims without citing fetched URLs or verified repositories — add citations from fetch_url / web_search"}
+		}
+	}
+	// Also catch any github-username OSINT summary with zero URLs at all
+	if strings.Contains(low, "github") && (strings.Contains(low, "profile") || strings.Contains(low, "repository") || strings.Contains(low, "repositories")) {
+		return []string{"github OSINT summary has no URL citations — cite https://github.com/<user> and fetched page content verbatim"}
 	}
 	return nil
 }

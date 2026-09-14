@@ -282,6 +282,24 @@ func retryBackoff(attempt int) time.Duration {
 	}
 }
 
+func retryBackoffForErr(attempt int, err error) time.Duration {
+	if err != nil {
+		low := strings.ToLower(err.Error())
+		if strings.Contains(low, "429") || strings.Contains(low, "rate limit") || strings.Contains(low, "rate-limit") {
+			// Free-tier per-minute bucket — wait out the window, not 350ms.
+			switch attempt {
+			case 0:
+				return 8 * time.Second
+			case 1:
+				return 15 * time.Second
+			default:
+				return 25 * time.Second
+			}
+		}
+	}
+	return retryBackoff(attempt)
+}
+
 func sleepWithContext(ctx context.Context, d time.Duration) error {
 	t := time.NewTimer(d)
 	defer t.Stop()
@@ -302,6 +320,9 @@ func isRetryableLLMError(err error) bool {
 	case strings.Contains(msg, "timeout"),
 		strings.Contains(msg, "temporarily"),
 		strings.Contains(msg, "try again"),
+		strings.Contains(msg, "rate limit"),
+		strings.Contains(msg, "rate-limit"),
+		strings.Contains(msg, "429"),
 		strings.Contains(msg, "eof"),
 		strings.Contains(msg, "connection reset"),
 		strings.Contains(msg, "broken pipe"),
