@@ -193,6 +193,7 @@ func groundingCorrections(final string, recs []toolOutputEvidence) string {
 	warns = append(warns, inventedIPWarnings(final, facts)...)
 	warns = append(warns, inventedMACWarnings(final, facts)...)
 	warns = append(warns, wirelessDenialWarning(final, facts)...)
+	warns = append(warns, ungroundedOSINTWarnings(final, recs)...)
 
 	if len(warns) == 0 {
 		return ""
@@ -201,4 +202,29 @@ func groundingCorrections(final string, recs []toolOutputEvidence) string {
 		warns = warns[:5]
 	}
 	return "the summary makes claims that contradict the recorded tool evidence:\n- " + strings.Join(warns, "\n- ")
+}
+
+// ungroundedOSINTWarnings flags ungrounded persona synthesis when OSINT tools ran
+// but returned only URLs/repos without biographical claims.
+func ungroundedOSINTWarnings(final string, recs []toolOutputEvidence) []string {
+	var osintToolRan bool
+	var hasEvidenceContent bool
+	for _, r := range recs {
+		if strings.HasPrefix(r.tool, "osint_") || r.tool == "web_search" || r.tool == "fetch_url" {
+			osintToolRan = true
+			if len(strings.TrimSpace(r.output)) > 20 {
+				hasEvidenceContent = true
+			}
+		}
+	}
+	if !osintToolRan || !hasEvidenceContent {
+		return nil
+	}
+	low := strings.ToLower(final)
+	// Check for speculative profile buzzwords when raw tools only returned bare links
+	if (strings.Contains(low, "security researcher") || strings.Contains(low, "reverse engineering specialist") || strings.Contains(low, "ctf player")) &&
+		!strings.Contains(low, "http://") && !strings.Contains(low, "https://") && !strings.Contains(low, "github.com") {
+		return []string{"synthesized a speculative bio without citing fetched URLs or verified repositories"}
+	}
+	return nil
 }

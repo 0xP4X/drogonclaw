@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/rand"
@@ -165,6 +166,11 @@ func main() {
 		}
 		fmt.Println("  [+] DrogonClaw running in Daemon mode. Listening via Telegram...")
 		select {}
+	}
+
+	if opts.action == actionPrompt {
+		runHeadlessPrompt(orch, opts.prompt, opts.outputFormat, opts.quiet)
+		os.Exit(0)
 	}
 
 	model, err := tui.New(orch, graph, opsecMgr, cfg, manifest, sb)
@@ -379,6 +385,64 @@ func runWhitebox(cfg *config.Manager, args []string) {
 		}
 	}
 	fmt.Printf("  [+] %d findings (%d verified). Report: %s\n", len(rep.Findings), verified, path)
+}
+
+// runHeadlessPrompt executes a single prompt without the TUI interface.
+// Supports plain text and structured JSON output for CLI pipeline integration.
+func runHeadlessPrompt(orch *agent.Orchestrator, prompt string, outputFormat string, quiet bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
+
+	events := make(chan agent.Event, 32)
+	go func() {
+		_ = orch.Execute(ctx, prompt, events)
+	}()
+
+	var finalAnswer strings.Builder
+	var executedTools []string
+
+	for ev := range events {
+		switch ev.Type {
+		case agent.EvToolStart:
+			executedTools = append(executedTools, ev.Tool)
+			if !quiet && outputFormat != "json" {
+				fmt.Fprintf(os.Stderr, "  [*] Executing: %s (%s)\n", ev.Tool, ev.Args)
+			}
+		case agent.EvToolDone:
+			if !quiet && outputFormat != "json" {
+				fmt.Fprintf(os.Stderr, "  [✓] Completed: %s\n", ev.Tool)
+			}
+		case agent.EvToken:
+			finalAnswer.WriteString(ev.Content)
+			if outputFormat == "text" && !quiet {
+				fmt.Print(ev.Content)
+			}
+		case agent.EvDone:
+			if finalAnswer.Len() == 0 {
+				finalAnswer.WriteString(ev.Content)
+			}
+		case agent.EvError:
+			if !quiet && outputFormat != "json" {
+				fmt.Fprintf(os.Stderr, "  [x] Error: %s\n", ev.Content)
+			}
+		}
+	}
+
+	res := strings.TrimSpace(finalAnswer.String())
+	if outputFormat == "json" {
+		outObj := map[string]any{
+			"prompt":    prompt,
+			"response":  res,
+			"tools_run": executedTools,
+			"session":   orch.SessionID,
+		}
+		b, _ := json.MarshalIndent(outObj, "", "  ")
+		fmt.Println(string(b))
+	} else if quiet {
+		fmt.Println(res)
+	} else if finalAnswer.Len() == 0 {
+		fmt.Println(res)
+	}
 }
 
 // diagnoseProviderError turns a raw ping failure into an actionable message.

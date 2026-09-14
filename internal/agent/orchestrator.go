@@ -541,7 +541,18 @@ func (o *Orchestrator) Execute(ctx context.Context, userMsg string, events chan<
 	blockedNudged := false
 	toolsExecutedThisRun := 0
 	deferralNudged := false
+	compactor := NewAutoCompactor(o.provider, o.graph)
+
 	for i := 0; i < maxIter; i++ {
+		// Auto-Compact context if history exceeds threshold
+		if compactor.ShouldCompact(messages) {
+			compacted, _, compErr := compactor.Compact(ctx, messages)
+			if compErr == nil && len(compacted) > 0 {
+				messages = compacted
+				events <- Event{Type: EvStatus, Content: "Auto-compacting conversation history to preserve context window..."}
+			}
+		}
+
 		var resp *CompletionResponse
 		var err error
 		var usedFast bool

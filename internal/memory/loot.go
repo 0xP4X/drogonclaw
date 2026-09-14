@@ -88,6 +88,14 @@ func encryptData(key []byte, plaintext string) (string, error) {
 func (l *LootDB) initSchema() error {
 	queries := []string{
 		`CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);`,
+		`CREATE TABLE IF NOT EXISTS targets (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			host TEXT NOT NULL UNIQUE,
+			ip TEXT,
+			os TEXT,
+			status TEXT DEFAULT 'alive',
+			discovered_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		);`,
 		`CREATE TABLE IF NOT EXISTS ports (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			ip TEXT NOT NULL,
@@ -111,6 +119,12 @@ func (l *LootDB) initSchema() error {
 			cve TEXT,
 			description TEXT,
 			severity TEXT,
+			discovered_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		);`,
+		`CREATE TABLE IF NOT EXISTS flags (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			target TEXT NOT NULL,
+			flag TEXT NOT NULL UNIQUE,
 			discovered_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		);`,
 	}
@@ -149,6 +163,22 @@ func (l *LootDB) InsertCredential(target, username, password, hash string) error
 
 	_, err = l.db.Exec(`INSERT INTO credentials (target, username, password_enc, hash_enc, discovered_at) VALUES (?, ?, ?, ?, ?)`,
 		target, username, encPassword, encHash, time.Now())
+	return err
+}
+
+// InsertTarget records an identified target host or IP.
+func (l *LootDB) InsertTarget(host, ip, os string) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	_, err := l.db.Exec(`INSERT OR IGNORE INTO targets (host, ip, os, discovered_at) VALUES (?, ?, ?, ?)`, host, ip, os, time.Now())
+	return err
+}
+
+// InsertFlag records a captured CTF or proof-of-compromise flag.
+func (l *LootDB) InsertFlag(target, flag string) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	_, err := l.db.Exec(`INSERT OR IGNORE INTO flags (target, flag, discovered_at) VALUES (?, ?, ?)`, target, flag, time.Now())
 	return err
 }
 

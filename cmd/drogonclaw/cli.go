@@ -32,12 +32,16 @@ const (
 	actionWhitebox
 	actionHealth
 	actionDaemon
+	actionPrompt
 )
 
 // cliOptions is the parsed description of the operator's intent.
 type cliOptions struct {
 	action       cliAction
 	forceSandbox *bool
+	prompt       string
+	outputFormat string
+	quiet        bool
 	extraArgs    []string
 }
 
@@ -52,6 +56,7 @@ type cliEntry struct {
 // unknown-command hints, so the dispatcher and its documentation cannot drift.
 var cliEntries = []cliEntry{
 	{"", "", "(no command)  Launch the interactive TUI"},
+	{"-p, --prompt", "\"<objective>\" [-f text|json] [-q]", "Run single offensive prompt headlessly without TUI"},
 	{"sandbox", "", "Launch the TUI with the Docker/Kali sandbox forced on"},
 	{"native", "[<env details>]", "Launch the TUI in native host mode"},
 	{"setup", "", "Run the interactive configuration wizard"},
@@ -112,38 +117,78 @@ func runStandaloneCommand(opts cliOptions, cfg *config.Manager) (handled bool, c
 // Unknown commands return a descriptive error so the operator is never silently
 // dropped into the TUI on a typo.
 func parseCLI(args []string) (cliOptions, error) {
-	opts := cliOptions{action: actionTUI}
+	opts := cliOptions{action: actionTUI, outputFormat: "text"}
 	if len(args) == 0 {
 		return opts, nil
 	}
-	switch args[0] {
-	case "help", "-h", "--help":
-		opts.action = actionHelp
-	case "version", "-v", "--version":
-		opts.action = actionVersion
-	case "setup":
-		opts.action = actionSetup
-	case "bench":
-		opts.action = actionBench
-		opts.extraArgs = args[1:]
-	case "whitebox":
-		opts.action = actionWhitebox
-		opts.extraArgs = args[1:]
-	case "health":
-		opts.action = actionHealth
-	case "daemon":
-		opts.action = actionDaemon
-	case "sandbox":
-		t := true
-		opts.forceSandbox = &t
-	case "native":
-		t := false
-		opts.forceSandbox = &t
-		if len(args) > 1 {
-			opts.extraArgs = args[1:]
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "help" || arg == "-h" || arg == "--help":
+			opts.action = actionHelp
+			return opts, nil
+		case arg == "version" || arg == "-v" || arg == "--version":
+			opts.action = actionVersion
+			return opts, nil
+		case arg == "setup":
+			opts.action = actionSetup
+			return opts, nil
+		case arg == "bench":
+			opts.action = actionBench
+			opts.extraArgs = args[i+1:]
+			return opts, nil
+		case arg == "whitebox":
+			opts.action = actionWhitebox
+			opts.extraArgs = args[i+1:]
+			return opts, nil
+		case arg == "health":
+			opts.action = actionHealth
+			return opts, nil
+		case arg == "daemon":
+			opts.action = actionDaemon
+			return opts, nil
+		case arg == "sandbox":
+			t := true
+			opts.forceSandbox = &t
+		case arg == "native":
+			t := false
+			opts.forceSandbox = &t
+			if i+1 < len(args) {
+				opts.extraArgs = args[i+1:]
+			}
+			return opts, nil
+		case arg == "-p" || arg == "--prompt":
+			opts.action = actionPrompt
+			if i+1 < len(args) {
+				opts.prompt = args[i+1]
+				i++
+			} else {
+				return opts, fmt.Errorf("-p/--prompt requires a prompt string")
+			}
+		case arg == "-f" || arg == "--format" || arg == "--output-format":
+			if i+1 < len(args) {
+				fmtVal := strings.ToLower(args[i+1])
+				if fmtVal != "text" && fmtVal != "json" {
+					return opts, fmt.Errorf("invalid format %q: must be 'text' or 'json'", fmtVal)
+				}
+				opts.outputFormat = fmtVal
+				i++
+			}
+		case arg == "-q" || arg == "--quiet":
+			opts.quiet = true
+		default:
+			if opts.action == actionPrompt {
+				// Keep collecting tokens if prompt was unquoted
+				if opts.prompt == "" {
+					opts.prompt = arg
+				} else {
+					opts.prompt += " " + arg
+				}
+			} else {
+				return opts, fmt.Errorf("unknown command: %s", arg)
+			}
 		}
-	default:
-		return opts, fmt.Errorf("unknown command: %s", args[0])
 	}
 	return opts, nil
 }

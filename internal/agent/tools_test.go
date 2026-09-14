@@ -115,3 +115,47 @@ func TestBuildNmapFlagsIncludesPn(t *testing.T) {
 		}
 	}
 }
+
+func TestUpdateNeuralMemoryCoercion(t *testing.T) {
+	tests := []struct {
+		name     string
+		data     any
+		expected string
+	}{
+		{
+			name:     "string alias JSON",
+			data:     `{"alias": "0xp4x"}`,
+			expected: "0xp4x",
+		},
+		{
+			name:     "plain string alias",
+			data:     "0xp4x",
+			expected: "0xp4x",
+		},
+		{
+			name:     "map with alias and handle",
+			data:     map[string]any{"alias": "0xp4x", "handle": "0xp4x"},
+			expected: "0xp4x",
+		},
+		{
+			name:     "stringified Go map format",
+			data:     "map[alias:0xp4x handle:0xp4x operator_type:human]",
+			expected: "0xp4x",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := &ToolRegistry{graph: memory.NewGraph("test_coercion_" + tt.name), builtins: make(map[string]BuiltinFn)}
+			r.registerBuiltins()
+			_ = r.builtins["update_neural_memory"](context.Background(), map[string]any{
+				"id": "operator", "label": "Operator", "data": tt.data,
+			})
+			profile := r.graph.GetOperatorProfile()
+			if profile == nil || profile.Name != tt.expected {
+				t.Fatalf("for test %q: expected operator name %q, got %+v", tt.name, tt.expected, profile)
+			}
+		})
+	}
+}
+
