@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/0xP4X/drogonclaw-go/internal/memory"
 	"github.com/openai/openai-go"
